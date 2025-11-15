@@ -11,7 +11,7 @@ It's defined by three parameters:
 """
 
 from cutlass import cute
-from cute_viz import render_swizzle_layout_svg, display_swizzle_layout
+from cute_viz import render_coord_space_svg, display_coord_space
 
 
 @cute.jit
@@ -43,12 +43,12 @@ def main():
     print(swizzled_layout)
 
     # Render to SVG file
-    render_swizzle_layout_svg(swizzled_layout, "assets/swizzle_layout.svg")
+    render_coord_space_svg(swizzled_layout, "assets/swizzle_layout.svg")
     print("\nSwizzle layout saved to assets/swizzle_layout.svg")
 
     # Or display directly in Jupyter notebook
     # Uncomment the line below when running in Jupyter
-    # display_swizzle_layout(swizzled_layout)
+    # display_layout(swizzled_layout)
 
 
 if __name__ == "__main__":

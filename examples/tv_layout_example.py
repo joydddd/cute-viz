@@ -5,7 +5,7 @@ This example demonstrates how to visualize a CuTe thread-value (TV) layout.
 """
 
 from cutlass import cute
-from cute_viz import render_tv_layout_svg, display_tv_layout
+from cute_viz import render_layout, display_indice_space
 
 
 @cute.jit
@@ -18,12 +18,13 @@ def main():
     )
 
     # Render to SVG file
-    render_tv_layout_svg(tv_layout, tile_mn, "assets/tv_layout.svg")
+    render_layout(tv_layout, "assets/tv_layout.svg", indice_space=tile_mn)
+    # render_indice_space_svg(tv_layout, "assets/tv_layout.svg", tile_mn)
     print("TV layout saved to assets/tv_layout.svg")
 
     # Or display directly in Jupyter notebook
     # Uncomment the line below when running in Jupyter
-    # display_tv_layout(tv_layout, tile_mn)
+    # display_indice_space(tv_layout, tile_mn)
 
 
 if __name__ == "__main__":
