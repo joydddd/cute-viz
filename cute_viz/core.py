@@ -6,7 +6,7 @@ import colorsys
 import itertools
 import numpy as np
 import svgwrite
-from typing import Tuple
+from typing import Any, Tuple
 from cutlass import cute, range_constexpr
 from cutlass.cute import size, cosize, rank, make_identity_tensor, depth
 
@@ -186,17 +186,24 @@ def _create_natural_palette(shape: Tuple[int, ...]):
         # Generate evenly distributed hues around color wheel
         hue_palette = [i * 360 / num_hues for i in range(num_hues)]
     
-    colors = np.empty((num_hues, num_steps), dtype=object)
     # Multi-hue palette: hue as outer dimension
     # Product: for each hue, iterate through all (sat, light) pairs
-    for i, hue in enumerate(hue_palette):
-        for j, (_, sat, light) in enumerate(sat_light_pairs):
-            colors[i, j] = (hue, sat, light)
-    
     if is_2d_color_platte:
-        return colors
+        # Return 2D structure: list of lists, one per hue
+        colors = []
+        for hue in hue_palette:
+            hue_colors = []
+            for _, sat, light in sat_light_pairs:
+                hue_colors.append((hue, sat, light))
+            colors.append(hue_colors)
     else:
-        return colors.flatten()
+        # Return 1D structure: flattened list
+        colors = []
+        for hue in hue_palette:
+            for _, sat, light in sat_light_pairs:
+                colors.append((hue, sat, light))
+    
+    return colors
 
 
 # Combine hue and lightness/saturation palettes to create full HSL color space
@@ -233,6 +240,24 @@ def _apply_layout(layout: cute.Layout , coord: cute.Coord):
 def _index_tensor(layout: cute.Tensor , coord: cute.Coord):
     return layout[coord]
 
+@cute.jit
+def _idx2crd(idx: int, shape: cute.Shape):
+    return cute.idx2crd(idx, shape)
+
+
+def _arange_shape(shape: cute.Shape) -> np.ndarray:
+    coords = np.empty(size(shape), dtype=object)
+    
+    # Step 2: Iterate over all multi-dimensional coordinates
+    for idx in range(size(shape)):
+        coord = _idx2crd(idx, shape)
+        coords[idx] = coord
+    if isinstance(shape, tuple):
+        target_shape = tuple[int, ...](size(dim) for dim in shape)
+    else: 
+        target_shape = shape
+    return coords.reshape(target_shape, order='F')
+    
 
 def _extract_layout_indices(layout, coord_space):
     """
@@ -256,22 +281,18 @@ def _extract_layout_indices(layout, coord_space):
         - coord_space=(3, 6), target_space=18 -> array of shape (3, 6) with int elements
         - coord_space=(3, 6), target_space=(4, 5) -> array of shape (3, 6) with tuple elements
     """
+    coords_array = _arange_shape(coord_space)
+    indices = np.empty_like(coords_array, dtype=object)
     
-    # Step 1: Allocate array of shape flatten(coord_space)
-    # Use object dtype to store tuples or ints
-    flatten_shape = _flatten_to_tuple(coord_space)
-    indices = np.empty(flatten_shape, dtype=object)
-    
-    # Step 2: Iterate over all multi-dimensional coordinates
-    for flatten_coord in itertools.product(*[range(d) for d in flatten_shape]):
-        coord = _unflatten(flatten_coord, coord_space)
+    for idx, coord in np.ndenumerate(coords_array):
         if isinstance(layout, cute.Tensor):
             indice = _index_tensor(layout, coord)
         else:
             indice = _apply_layout(layout, coord)
-        indices[flatten_coord] = indice
-    
+        indices[idx] = indice
+
     return indices
+    
 
 
 def _extract_layout_coords(layout: cute.Tensor, coord_space: cute.Shape, indice_space: cute.Shape):
@@ -286,8 +307,6 @@ def _extract_layout_coords(layout: cute.Tensor, coord_space: cute.Shape, indice_
         coords[indice] = coord
     
     return coords
-
-
 
 
 def _draw_layout_cell(dwg, x, y, cell_size, idx, colors, color_idx=None):
@@ -372,16 +391,13 @@ def _draw_layout_cell(dwg, x, y, cell_size, idx, colors, color_idx=None):
         )
 
 
-def _draw_axis_labels(dwg, positions, label_margin, cell_size, orientation='horizontal'):
+def _draw_axis_labels(dwg, positions):
     """
     Draw axis labels at specified positions.
     
     Args:
         dwg: svgwrite.Drawing object
         positions: List of (index, x, y) tuples for label positions
-        label_margin: Margin size
-        cell_size: Cell size
-        orientation: 'horizontal' (top) or 'vertical' (left)
     """
     for i, x, y in positions:
         dwg.add(
@@ -394,6 +410,46 @@ def _draw_axis_labels(dwg, positions, label_margin, cell_size, orientation='hori
             )
         )
 
+def _draw_hierarchical_separators(dwg, positions, span_length: float, orientation="horizontal", level=0):
+    """
+    Draw bold blue separator lines at specified positions.
+    
+    Args:
+        dwg: svgwrite.Drawing object
+        positions: List of (x, y) tuples where separators should be drawn
+        span_length: Length of the separator line
+        orientation: 'horizontal' or 'vertical'
+    
+    For horizontal lines: draws from (x, y) to (x + span_length, y)
+    For vertical lines: draws from (x, y) to (x, y + span_length)
+    """
+    styles = [
+        (3.0, 'blue'),      # Level 0: most important - very thick, emphasized color
+        (2.0, 'steelblue'),     # Level 1: important
+        (1.0, 'black'),        # Level 2+: baseline (matches cell borders)
+    ]
+    
+    # Get style for this level (use last style if level exceeds array)
+    style_index = min(level, len(styles) - 1)
+    separator_width, separator_color = styles[style_index]
+    
+    for x, y in positions:
+        if orientation == 'horizontal':
+            # Horizontal line from (x, y) to (x + span_length, y)
+            dwg.add(dwg.line(
+                start=(x, y),
+                end=(x + span_length, y),
+                stroke=separator_color,
+                stroke_width=separator_width
+            ))
+        elif orientation == 'vertical':
+            # Vertical line from (x, y) to (x, y + span_length)
+            dwg.add(dwg.line(
+                start=(x, y),
+                end=(x, y + span_length),
+                stroke=separator_color,
+                stroke_width=separator_width
+            ))
 
 def _create_1d_grid_svg(grid_shape, indices, color_palette, color_indices=None):
     """Create SVG for 1D grid visualization.
@@ -432,7 +488,7 @@ def _create_1d_grid_svg(grid_shape, indices, color_palette, color_indices=None):
         (i, i * cell_size + label_margin + cell_size // 2, label_margin // 2)
         for i in range(M)
     ]
-    _draw_axis_labels(dwg, label_positions, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, label_positions)
     
     return dwg
 
@@ -442,6 +498,7 @@ def _create_2d_grid_svg(grid_shape, indices, color_palette, color_indices=None):
     
     Args:
         grid_shape: Shape of the grid to draw (tuple of (M, N))
+                   Each mode can be hierarchical, e.g., ((2, 3), 3) for a 6×3 grid
         indices: Array where indices[i, j] is the label for position (i, j)
         color_palette: List of (hue, saturation, lightness) tuples
         color_indices: Optional array where color_indices[i, j] is the color index for position (i, j)
@@ -455,9 +512,7 @@ def _create_2d_grid_svg(grid_shape, indices, color_palette, color_indices=None):
     if color_indices is None:
         color_indices = indices
     
-    if rank(color_indices.flat[0]) == 1:
-        color_palette = color_palette.flatten()
-    
+    assert rank(grid_shape) == 2, "grid_shape must be a rank-2 tuple"
 
     M, N = size(grid_shape[0]), size(grid_shape[1])
     
@@ -474,20 +529,35 @@ def _create_2d_grid_svg(grid_shape, indices, color_palette, color_indices=None):
             x = j * cell_size + label_margin
             y = i * cell_size + label_margin
             _draw_layout_cell(dwg, x, y, cell_size, indices[i, j], color_palette,  color_indices[i, j])
+    
+    # Draw hierarchical separators for columns
+    column_shape = grid_shape[1]
+    for r in range(1, rank(column_shape)):
+        x_step = cell_size * size(column_shape[:r])
+        pos = [(x_step*j + label_margin, label_margin) for j in range(column_shape[r])]
+        _draw_hierarchical_separators(dwg, pos, cell_size*M, 'vertical', level=rank(column_shape) - r - 1)
+
 
     # Add top axis labels (column indices)
     top_labels = [
-        (j, j * cell_size + label_margin + cell_size // 2, label_margin // 2)
-        for j in range(N)
+        (idx, j * cell_size + label_margin + cell_size // 2, label_margin // 2)
+        for j, idx in enumerate(_arange_shape(column_shape).flatten(order='F'))
     ]
-    _draw_axis_labels(dwg, top_labels, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, top_labels)
+
+    # Draw hierarchical separators for rows
+    row_shape = grid_shape[0]
+    for r in range(1, rank(row_shape)):
+        y_step = cell_size * size(row_shape[:r])
+        pos = [(label_margin, y_step*i + label_margin) for i in range(row_shape[r] + 1)]
+        _draw_hierarchical_separators(dwg, pos, cell_size*N, 'horizontal', level=rank(row_shape) - r - 1)
     
     # Add left axis labels (row indices)
     left_labels = [
-        (i, label_margin // 2, i * cell_size + label_margin + cell_size // 2)
-        for i in range(M)
-    ]
-    _draw_axis_labels(dwg, left_labels, label_margin, cell_size, 'vertical')
+        (idx, label_margin // 2, i * cell_size + label_margin + cell_size // 2)
+        for i, idx in enumerate(_arange_shape(row_shape).flatten(order='F'))
+    ]    
+    _draw_axis_labels(dwg, left_labels)
 
     return dwg
 
@@ -506,17 +576,17 @@ def _create_coord_space_svg(layout, coord_space=None, color_palette=None):
     Returns:
         svgwrite.Drawing object
     """
-    # Use coord_space if provided, otherwise default to layout's flattened sizes
-    r = rank(layout)
+    # Use coord_space if provided, otherwise default to layout's flattened sizes)
     if coord_space is None:
-        d = depth(layout)
-        if d == 0:
+        if isinstance(layout.shape, tuple):
+            coord_space = tuple(size(dim) for dim in layout.shape)
+        else:
             coord_space = size(layout)
-        else: 
-            coord_space = tuple(size(layout, mode=[i]) for i in range(r))
+        
+    r = rank(coord_space)
     
     # Extract indices
-    coords = _extract_layout_indices(layout, coord_space)
+    indices = _extract_layout_indices(layout, coord_space)
     
     # Generate color palette if not provided
     if color_palette is None:
@@ -527,14 +597,9 @@ def _create_coord_space_svg(layout, coord_space=None, color_palette=None):
     
     # Render grid
     if r == 1:
-        M = coord_space[0] if isinstance(coord_space, tuple) else size(coord_space)
-        return _create_1d_grid_svg(M, coords, color_palette)
+        return _create_1d_grid_svg(coord_space, indices, color_palette)
     elif r >= 2:
-        if isinstance(coord_space, tuple):
-            M, N = coord_space[0], coord_space[1]
-        else:
-            M, N = size(coord_space[0]), size(coord_space[1])
-        return _create_2d_grid_svg((M, N), coords, color_palette)
+        return _create_2d_grid_svg(coord_space, indices, color_palette)
     else:
         raise ValueError("coord_space must have at least rank 1")
 
@@ -620,14 +685,14 @@ def _create_indice_space_svg(layout, indice_space=None, color_palette=None, colo
     if indice_rank == 1:
         # 1D indice space
         M = size(indice_space)
-        color_idx = coord_array if color_space == "coord" else np.arange(M)
+        color_idx = coord_array if color_space == "coord" else range(M)
         return _create_1d_grid_svg(M, coord_array, color_palette, color_idx)
 
     else:
         # 2D indice space
         assert indice_rank == 2, "Expected a rank-2 indice space"
         M, N = size(indice_space[0]), size(indice_space[1])
-        color_idx = coord_array if color_space == "coord" else np.arange(M * N).reshape(M, N)
+        color_idx = coord_array if color_space == "coord" else range(M * N)
         return _create_2d_grid_svg((M, N), coord_array, color_palette, color_idx)
 
 
@@ -710,42 +775,21 @@ def _create_layout_svg(layout, coord_space=None, indice_space=None, color_palett
     
     # Calculate combined dimensions with gap for arrow
     arrow_gap = 60
-    title_height = 25  # Space for titles above grids
     total_width = coord_width + arrow_gap + indice_width
-    total_height = max(coord_height, indice_height) + title_height
+    total_height = max(coord_height, indice_height)
     
     # Create combined SVG
     dwg = svgwrite.Drawing(size=(total_width, total_height))
     
-    # Add title for coordinate space
-    dwg.add(dwg.text(
-        'Coordinate Space',
-        insert=(coord_width / 2, 15),
-        text_anchor='middle',
-        font_size='14px',
-        font_weight='bold',
-        fill='black'
-    ))
-    
-    # Add coordinate space (left side, shifted down for title)
-    coord_group = dwg.g(id='coord_space', transform=f'translate(0, {title_height})')
+    # Add coordinate space (left side)
+    coord_group = dwg.g(id='coord_space')
     for element in dwg_coord.elements:
         coord_group.add(element)
     dwg.add(coord_group)
     
-    # Add title for indice space
+    # Add indice space (right side)
     offset_x = coord_width + arrow_gap
-    dwg.add(dwg.text(
-        'Indice Space',
-        insert=(offset_x + indice_width / 2, 15),
-        text_anchor='middle',
-        font_size='14px',
-        font_weight='bold',
-        fill='black'
-    ))
-    
-    # Add indice space (right side, shifted down for title)
-    indice_group = dwg.g(id='indice_space', transform=f'translate({offset_x}, {title_height})')
+    indice_group = dwg.g(id='indice_space', transform=f'translate({offset_x}, 0)')
     for element in dwg_indice.elements:
         indice_group.add(element)
     dwg.add(indice_group)
@@ -991,14 +1035,14 @@ def _create_copy_layout_svg(layout_s, layout_d, tile_mn):
         (j, j * cell_size + label_margin + cell_size // 2, label_margin // 2)
         for j in range(N)
     ]
-    _draw_axis_labels(dwg, top_labels_src, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, top_labels_src)
 
     # Left labels: row indices (0 to M-1)
     left_labels_src = [
         (i, label_margin // 2, i * cell_size + label_margin + cell_size // 2)
         for i in range(M)
     ]
-    _draw_axis_labels(dwg, left_labels_src, label_margin, cell_size, 'vertical')
+    _draw_axis_labels(dwg, left_labels_src)
 
     # Add axis labels for destination grid
     # Top labels: column indices (0 to N-1)
@@ -1006,14 +1050,14 @@ def _create_copy_layout_svg(layout_s, layout_d, tile_mn):
         (j, x_offset + j * cell_size + cell_size // 2, label_margin // 2)
         for j in range(N)
     ]
-    _draw_axis_labels(dwg, top_labels_dst, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, top_labels_dst)
 
     # Right labels: row indices (0 to M-1) - placed on RIGHT side for D grid
     right_labels_dst = [
         (i, x_offset + N * cell_size + label_margin // 2, i * cell_size + label_margin + cell_size // 2)
         for i in range(M)
     ]
-    _draw_axis_labels(dwg, right_labels_dst, label_margin, cell_size, 'vertical')
+    _draw_axis_labels(dwg, right_labels_dst)
 
     return dwg
 
@@ -1437,14 +1481,14 @@ def _create_mma_layout_svg(tiled_mma, tile_mnk):
         (k, label_margin + (k + 1) * cell_size + cell_size // 2, label_margin + (K + 2) * cell_size - cell_size // 2)
         for k in range(K)
     ]
-    _draw_axis_labels(dwg, a_top_labels, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, a_top_labels)
 
     # Left labels: M dimension (0 to M-1)
     a_left_labels = [
         (m, label_margin + cell_size // 2, label_margin + (m + K + 2) * cell_size + cell_size // 2)
         for m in range(M)
     ]
-    _draw_axis_labels(dwg, a_left_labels, label_margin, cell_size, 'vertical')
+    _draw_axis_labels(dwg, a_left_labels)
 
     # --- B matrix (K×N, shown transposed) axis labels ---
     # Top labels: K dimension (0 to K-1)
@@ -1452,14 +1496,14 @@ def _create_mma_layout_svg(tiled_mma, tile_mnk):
         (k, label_margin + (K + 2) * cell_size - cell_size // 2, label_margin + (k + 1) * cell_size + cell_size // 2)
         for k in range(K)
     ]
-    _draw_axis_labels(dwg, b_left_labels, label_margin, cell_size, 'vertical')
+    _draw_axis_labels(dwg, b_left_labels)
 
     # Right labels: N dimension (0 to N-1)
     b_top_labels = [
         (n, label_margin + (n + K + 2) * cell_size + cell_size // 2, label_margin + cell_size // 2)
         for n in range(N)
     ]
-    _draw_axis_labels(dwg, b_top_labels, label_margin, cell_size, 'horizontal')
+    _draw_axis_labels(dwg, b_top_labels)
 
     return dwg
 

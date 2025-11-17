@@ -31,6 +31,7 @@ main()
 | Example | Output |
 |---------|--------|
 | [**Basic Layout**](examples/layout_example.py) | ![Basic Layout](assets/layout_hierarchical.svg) |
+| [**Hierarchical Layout**](examples/layout_example.py) | ![Hierarchical Layout](assets/layout_hierarchical_2.svg) |
 | [**Swizzle Layout**](examples/swizzle_layout_example.py) | ![Swizzle Layout](assets/swizzle_layout.svg) |
 | [**Thread-Value Layout**](examples/tv_layout_example.py) | ![TV Layout](assets/tv_layout.svg) |
 | [**LDMATRIX Copy Atom**](examples/ldmatrix_copy_example.py) | ![LDMATRIX Layout](assets/ldmatrix_copy.svg) |
