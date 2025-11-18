@@ -28,14 +28,14 @@ def main():
     coord_space = ((8, 2), (2, 3))
 
 
-    # Render to SVG file
+    # Render to SVG file: vertical:  (tid_x, tid_y), horizontal: (vid_x, vid_y)
     render_coord_space_svg(cute.composition(identity_tensor_row_major, tv_layout), "assets/tv_layout.svg", coord_space=coord_space, color_palette=color_palette)
     # render_indice_space_svg(tv_layout, "assets/tv_layout.svg", tile_mn)
     print("TV layout saved to assets/tv_layout.svg")
 
     # Or display directly in Jupyter notebook
     # Uncomment the line below when running in Jupyter
-    # display_indice_space(tv_layout, tile_mn)
+    # display_indice_space(cute.composition(identity_tensor_row_major, tv_layout), "assets/tv_layout.svg", coord_space=coord_space, color_palette=color_palette)
 
 
 if __name__ == "__main__":
