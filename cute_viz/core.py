@@ -6,7 +6,7 @@ import colorsys
 import itertools
 import numpy as np
 import svgwrite
-from typing import Any, Tuple
+from typing import Any, Tuple, overload
 from cutlass import cute, range_constexpr
 from cutlass.cute import size, cosize, rank, make_identity_tensor, depth
 
@@ -95,6 +95,8 @@ def _create_color_scale(num_steps, hue=0, saturation=0.0, lightness_range=(0.0, 
     else:
         min_sat = max_sat = saturation
     
+    colors = np.empty(num_steps, dtype=object)
+    
     for idx in range(num_steps):
         # Calculate progress from 0 to 1
         if num_steps > 1:
@@ -108,12 +110,12 @@ def _create_color_scale(num_steps, hue=0, saturation=0.0, lightness_range=(0.0, 
         # Interpolate saturation (decreases with progress for natural look)
         sat = max_sat - (max_sat - min_sat) * progress
         
-        colors.append((hue, sat, light))
+        colors[idx] = (hue, sat, light)
     
     return colors
 
 
-def _create_greyscale_palette(num_steps, reverse=False):
+def create_greyscale_palette(num_steps, reverse=False):
     """
     Create a greyscale color palette.
     
@@ -137,7 +139,7 @@ def _create_greyscale_palette(num_steps, reverse=False):
         return _create_color_scale(num_steps, hue=0, saturation=0.0, lightness_range=(0.0, 1.0))
 
 
-def _create_natural_palette(shape: Tuple[int, ...]):
+def create_natural_palette(shape: Tuple[int, ...]) -> np.ndarray:
     """
     Create a natural-looking color palette similar to LIGHTNESS_SATURATION_PALETTE_COLOR.
     
@@ -157,11 +159,11 @@ def _create_natural_palette(shape: Tuple[int, ...]):
         
     Examples:
         # Single value generates a 1D list (e.g., 64 colors = 8x8 grid flattened)
-        palette_64 = _create_natural_palette(64)
+        palette_64 = create_natural_palette(64)
         # Returns: [(hue0, sat0, light0), (hue0, sat1, light1), ...]  (1D list)
         
         # Tuple specifies (num_steps, num_hues) and returns 2D structure
-        full_palette = _create_natural_palette((8, 8))
+        full_palette = create_natural_palette((8, 8))
         # Returns: [[(hue0, sat0, light0), ...], [(hue1, sat0, light0), ...], ...]  (2D list)
     """
     is_2d_color_platte = isinstance(shape, tuple)
@@ -171,45 +173,41 @@ def _create_natural_palette(shape: Tuple[int, ...]):
         num_steps = int(np.sqrt(shape))
         num_hues = (shape + num_steps - 1) // num_steps
     
+    if num_steps < len(LIGHTNESS_SATURATION_PALETTE_COLOR):
+        num_steps = len(LIGHTNESS_SATURATION_PALETTE_COLOR)
+    
+    if num_hues < len(HUE_PALETTE):
+        num_hues = len(HUE_PALETTE)
+    
     # Generate saturation/lightness pairs
     sat_light_pairs = _create_color_scale(
-        num_steps if num_steps >= 8 else  len(LIGHTNESS_SATURATION_PALETTE_COLOR),
+        num_steps,
         hue=0,  # Placeholder, will be replaced
         saturation=0.9,  # Max saturation at dark end
         lightness_range=(0.50, 0.90),  # Dark to light range
         vary_saturation=True  # Saturation decreases as lightness increases
     )
     
-    if num_hues < len(HUE_PALETTE):
-        hue_palette = HUE_PALETTE
-    else:
-        # Generate evenly distributed hues around color wheel
-        hue_palette = [i * 360 / num_hues for i in range(num_hues)]
+
+    hue_palette = [i * 360 / num_hues for i in range(num_hues)]
     
-    # Multi-hue palette: hue as outer dimension
-    # Product: for each hue, iterate through all (sat, light) pairs
+    colors = np.empty((num_steps, num_hues), dtype=object)
+
+    for j, hue in enumerate(hue_palette):
+        for i, (_, sat, light) in enumerate(sat_light_pairs):
+            colors[i, j] = (hue, sat, light)
+    
     if is_2d_color_platte:
-        # Return 2D structure: list of lists, one per hue
-        colors = []
-        for hue in hue_palette:
-            hue_colors = []
-            for _, sat, light in sat_light_pairs:
-                hue_colors.append((hue, sat, light))
-            colors.append(hue_colors)
+        return colors
     else:
-        # Return 1D structure: flattened list
-        colors = []
-        for hue in hue_palette:
-            for _, sat, light in sat_light_pairs:
-                colors.append((hue, sat, light))
-    
-    return colors
+        return colors.flatten(order='F')
+
 
 
 # Combine hue and lightness/saturation palettes to create full HSL color space
 # Format: (Hue in degrees 0-360, Saturation 0-1, Lightness 0-1)
 # Generate dynamically using natural palette function with hue as outer dimension
-HSL_COLORS = _create_natural_palette(
+HSL_COLORS = create_natural_palette(
     (len(LIGHTNESS_SATURATION_PALETTE), len(HUE_PALETTE))
 )
 
@@ -290,10 +288,8 @@ def _extract_layout_indices(layout, coord_space):
         else:
             indice = _apply_layout(layout, coord)
         indices[idx] = indice
-
     return indices
     
-
 
 def _extract_layout_coords(layout: cute.Tensor, coord_space: cute.Shape, indice_space: cute.Shape):
     flatten_coord_shape = _flatten_to_tuple(coord_space)
@@ -330,9 +326,10 @@ def _draw_layout_cell(dwg, x, y, cell_size, idx, colors, color_idx=None):
     # Use idx for coloring if color_idx not provided
     if color_idx is None:
         color_idx = idx
+
     
     if rank(color_idx) == 1:
-        hue, sat, light = colors[color_idx % len(colors)]
+        hue, sat, light = colors.flatten(order='F')[color_idx % size(colors.shape)]
     else:
         assert rank(color_idx) == 2, "color_idx must be 1D or 2D"
         i, j = color_idx
@@ -353,36 +350,12 @@ def _draw_layout_cell(dwg, x, y, cell_size, idx, colors, color_idx=None):
     )
     
     # Draw text labels (idx is used for display, not color_idx)
-    is_2d_idx = isinstance(idx, (tuple, list))
-    if is_2d_idx:
-        # 2D layout: display first and second index on separate lines
-        i, j = idx
+    is_tuple = isinstance(idx, (tuple, list))
+    for r, i in enumerate(idx):
         dwg.add(
             dwg.text(
-                str(i),
-                insert=(x + cell_size // 2, y + 1 * cell_size // 4),
-                text_anchor="middle",
-                alignment_baseline="central",
-                font_size="8px",
-                fill=text_color,
-            )
-        )
-        dwg.add(
-            dwg.text(
-                str(j),
-                insert=(x + cell_size // 2, y + 3 * cell_size // 4),
-                text_anchor="middle",
-                alignment_baseline="central",
-                font_size="8px",
-                fill=text_color,
-            )
-        )
-    else:
-        # Regular layout: display single centered index
-        dwg.add(
-            dwg.text(
-                str(idx),
-                insert=(x + cell_size // 2, y + cell_size // 2),
+                str(f"{i},"),
+                insert=(x + cell_size // 2, y + (r + 1/2) * (cell_size / len(idx))),
                 text_anchor="middle",
                 alignment_baseline="central",
                 font_size="8px",
@@ -591,9 +564,9 @@ def _create_coord_space_svg(layout, coord_space=None, color_palette=None):
     # Generate color palette if not provided
     if color_palette is None:
         if cosize(layout) > 16:
-            color_palette = _create_natural_palette(cosize(layout))
+            color_palette = create_natural_palette(cosize(layout))
         else: 
-            color_palette = _create_greyscale_palette(cosize(layout), reverse=True)
+            color_palette = create_greyscale_palette(cosize(layout), reverse=True)
     
     # Render grid
     if r == 1:
@@ -675,9 +648,9 @@ def _create_indice_space_svg(layout, indice_space=None, color_palette=None, colo
     # Generate color palette if not provided
     if color_palette is None:
         if size(layout) > 16:
-            color_palette = _create_natural_palette(coord_space)
+            color_palette = create_natural_palette(coord_space)
         else: 
-            color_palette = _create_greyscale_palette(coord_space, reverse=True)
+            color_palette = create_greyscale_palette(coord_space, reverse=True)
         
     coord_array = _extract_layout_coords(composed_layout, coord_space, indice_space)
     
@@ -752,9 +725,10 @@ def _create_layout_svg(layout, coord_space=None, indice_space=None, color_palett
         indice_space = cosize(layout)
     if color_palette is None:
         if size(indice_space) > 16:
-            color_palette = _create_natural_palette(indice_space)
+            color_palette = create_natural_palette(indice_space)
         else:
-            color_palette = _create_greyscale_palette(indice_space, reverse=True)
+            color_palette = create_greyscale_palette(indice_space, reverse=True)
+        
     
     # Create coordinate space grid
     dwg_coord = _create_coord_space_svg(layout, coord_space, color_palette)

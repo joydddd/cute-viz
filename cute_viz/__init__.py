@@ -22,6 +22,8 @@ from .core import (
     display_tiled_mma,
     tidfrg_S,
     tidfrg_D,
+    create_natural_palette,
+    create_greyscale_palette,
 )
 
 __version__ = "0.1.0"
@@ -43,4 +45,6 @@ __all__ = [
     "display_tiled_mma",
     "tidfrg_S",
     "tidfrg_D",
+    "create_natural_palette",
+    "create_greyscale_palette",
 ]
